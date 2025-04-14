@@ -22,7 +22,73 @@
             min-height: 100vh;
         }
         
-        .container {
+        #loadingScreen {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(10, 10, 20, 0.95);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+        }
+        
+        .loading-content {
+            width: 80%;
+            max-width: 600px;
+            background-color: rgba(30, 30, 40, 0.9);
+            padding: 30px;
+            border-radius: 10px;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.5);
+            text-align: center;
+        }
+        
+        .progress-container {
+            width: 100%;
+            background-color: rgba(40, 40, 50, 0.8);
+            border-radius: 5px;
+            margin: 20px 0;
+            overflow: hidden;
+        }
+        
+        .progress-bar {
+            height: 20px;
+            background-color: #4CAF50;
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+        
+        .stats {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+        }
+        
+        .stat-item {
+            margin: 5px 10px;
+        }
+        
+        .loading-spinner {
+            border: 5px solid rgba(76, 175, 80, 0.3);
+            border-radius: 50%;
+            border-top: 5px solid #4CAF50;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        #mainContainer {
+            display: none;
             max-width: 1200px;
             margin: 0 auto;
             padding: 20px;
@@ -172,10 +238,10 @@
             color: #e0e0e0;
         }
         
-        .difficulty-easy { color: #4CAF50; }
-        .difficulty-normal { color: #2196F3; }
-        .difficulty-hard { color: #FF9800; }
-        .difficulty-hell { color: #F44336; }
+        .difficulty-easy { color: #30F501; }
+        .difficulty-normal { color: #FFFF31; }
+        .difficulty-hard { color: #FF6531; }
+        .difficulty-hell { color: #FF3000; }
         
         .notification {
             position: fixed;
@@ -240,7 +306,6 @@
             background-color: rgba(76, 175, 80, 0.2);
         }
         
-        /* Lazy loading styles */
         .level-row {
             display: none;
         }
@@ -248,11 +313,48 @@
         .level-row.visible {
             display: table-row;
         }
+        
+        #errorLog {
+            color: #ff6b6b;
+            margin-top: 10px;
+            min-height: 20px;
+            transition: opacity 0.5s;
+        }
+        
+        #errorLog.fade-out {
+            opacity: 0;
+        }
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>BLOCK BROS LEVEL SEARCH</h1>
+    <div id="loadingScreen">
+        <div class="loading-content">
+            <h2>Loading Block Bros Levels</h2>
+            <div class="loading-spinner"></div>
+            <div class="stats">
+                <div class="stat-item">
+                    <strong>Loaded:</strong> <span id="loadedCount">0</span>/<span id="totalCount">139</span> files
+                </div>
+                <div class="stat-item">
+                    <strong>Levels Found:</strong> <span id="levelsCount">0</span>
+                </div>
+                <div class="stat-item">
+                    <strong>Speed:</strong> <span id="speed">0</span> files/sec
+                </div>
+                <div class="stat-item">
+                    <strong>ETA:</strong> <span id="eta">Calculating...</span>
+                </div>
+            </div>
+            <div class="progress-container">
+                <div class="progress-bar" id="progressBar"></div>
+            </div>
+            <div id="currentFile">Starting download...</div>
+            <div id="errorLog"></div>
+        </div>
+    </div>
+
+    <div id="mainContainer">
+        <h1>LEVEL GURTER V1.0</h1>
         
         <div class="controls">
             <div class="control-group">
@@ -352,17 +454,17 @@
         let filteredLevels = [];
         let visibleRows = 0;
         const rowsPerLoad = 50;
+        const MAX_CONCURRENT_DOWNLOADS = 10;
+        const TOTAL_FILES = 139;
         
         // Initialize when page loads
         document.addEventListener('DOMContentLoaded', function() {
-            fetchLevels();
+            loadAllParts();
             
-            // Set up event listeners
             document.getElementById('searchButton').addEventListener('click', filterLevels);
             document.getElementById('resetButton').addEventListener('click', resetFilters);
             document.getElementById('loadMoreBtn').addEventListener('click', loadMoreRows);
             
-            // Scroll event for scroll-to-top button
             window.addEventListener('scroll', handleScroll);
             document.getElementById('scrollTopBtn').addEventListener('click', scrollToTop);
         });
@@ -374,28 +476,131 @@
             notification.textContent = message;
             document.body.appendChild(notification);
             
-            // Remove after animation completes
             setTimeout(() => {
                 notification.remove();
             }, 3000);
         }
         
-        // Fetch levels from the URL
-        async function fetchLevels() {
-            try {
-                const response = await fetch('https://recfr.xyz/levels/levels.txt_part_1.txt');
-                const text = await response.text();
+        // Load all parts (1-139)
+        async function loadAllParts() {
+            const startTime = Date.now();
+            let loadedFiles = 0;
+            let successfulFiles = 0;
+            let levelsCount = 0;
+            let lastUpdateTime = startTime;
+            let filesPerSecond = 0;
+            let lastError = null;
+            let errorTimeout = null;
+            
+            function updateStats() {
+                const now = Date.now();
+                const elapsedSeconds = (now - startTime) / 1000;
                 
-                // Parse the text to extract JSON objects
-                parseLevelsData(text);
-            } catch (error) {
-                console.error('Error fetching levels:', error);
-                document.getElementById('loading').textContent = 'Error loading level data. Please try again later.';
+                if (now - lastUpdateTime > 1000) {
+                    filesPerSecond = loadedFiles / elapsedSeconds;
+                    lastUpdateTime = now;
+                }
+                
+                document.getElementById('loadedCount').textContent = loadedFiles;
+                document.getElementById('levelsCount').textContent = levelsCount;
+                document.getElementById('speed').textContent = filesPerSecond.toFixed(1);
+                
+                if (filesPerSecond > 0) {
+                    const remainingFiles = TOTAL_FILES - loadedFiles;
+                    const etaSeconds = remainingFiles / filesPerSecond;
+                    document.getElementById('eta').textContent = formatTime(etaSeconds);
+                }
+                
+                const progress = (loadedFiles / TOTAL_FILES) * 100;
+                document.getElementById('progressBar').style.width = `${progress}%`;
             }
+            
+            function formatTime(seconds) {
+                const hours = Math.floor(seconds / 3600);
+                const minutes = Math.floor((seconds % 3600) / 60);
+                const secs = Math.floor(seconds % 60);
+                return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+            }
+            
+            async function processFile(fileNumber) {
+                const url = `https://raw.githubusercontent.com/jaylocklol/Lvl-Gurter/refs/heads/main/levels/levels.txt_part_${fileNumber}.txt`;
+                document.getElementById('currentFile').textContent = `Loading: ${url}`;
+                
+                try {
+                    const response = await fetch(url);
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+                    const text = await response.text();
+                    
+                    const levels = parseLevelsFromText(text);
+                    levelsCount += levels.length;
+                    allLevels.push(...levels);
+                    successfulFiles++;
+                } catch (error) {
+                    lastError = `Part ${fileNumber} failed (${error.message})`;
+                    updateErrorLog(lastError);
+                } finally {
+                    loadedFiles++;
+                    updateStats();
+                    
+                    if (loadedFiles >= TOTAL_FILES) {
+                        finishLoading();
+                    }
+                }
+            }
+            
+            function updateErrorLog(message) {
+                const errorLog = document.getElementById('errorLog');
+                
+                if (errorTimeout) {
+                    clearTimeout(errorTimeout);
+                    errorLog.classList.remove('fade-out');
+                }
+                
+                errorLog.textContent = message;
+                
+                errorTimeout = setTimeout(() => {
+                    errorLog.classList.add('fade-out');
+                    errorTimeout = null;
+                }, 3000);
+            }
+            
+            async function processBatch(start, end) {
+                const promises = [];
+                for (let i = start; i <= end; i++) {
+                    promises.push(processFile(i));
+                }
+                await Promise.all(promises);
+            }
+            
+            async function processAllFiles() {
+                const batchSize = MAX_CONCURRENT_DOWNLOADS;
+                for (let i = 1; i <= TOTAL_FILES; i += batchSize) {
+                    const end = Math.min(i + batchSize - 1, TOTAL_FILES);
+                    await processBatch(i, end);
+                }
+            }
+            
+            function finishLoading() {
+                const loadingTime = (Date.now() - startTime) / 1000;
+                console.log(`Loaded ${levelsCount} levels from ${successfulFiles} files in ${loadingTime.toFixed(1)} seconds`);
+                
+                document.getElementById('loadingScreen').style.display = 'none';
+                document.getElementById('mainContainer').style.display = 'block';
+                
+                filteredLevels = [...allLevels];
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('resultsTable').classList.add('loaded');
+                
+                showNotification(`Loaded ${levelsCount} levels from ${successfulFiles} files!`);
+                displayLevels(filteredLevels);
+            }
+            
+            processAllFiles();
         }
         
-        // Parse the text data to extract level JSON objects
-        function parseLevelsData(text) {
+        function parseLevelsFromText(text) {
             const levels = [];
             let currentPos = 0;
             let openBracePos = text.indexOf('{', currentPos);
@@ -420,21 +625,9 @@
                 openBracePos = text.indexOf('{', currentPos);
             }
             
-            allLevels = levels;
-            filteredLevels = [...levels];
-            
-            // Hide loading message and show table
-            document.getElementById('loading').style.display = 'none';
-            document.getElementById('resultsTable').classList.add('loaded');
-            
-            // Show notification
-            showNotification(`Loaded ${levels.length} levels!`);
-            
-            // Initial display of rows
-            displayLevels(filteredLevels);
+            return levels;
         }
         
-        // Helper function to find the matching closing brace
         function findMatchingCloseBrace(str) {
             let count = 1;
             let pos = 1;
@@ -448,7 +641,6 @@
             return count === 0 ? pos - 1 : -1;
         }
         
-        // Display levels in the table with lazy loading
         function displayLevels(levels) {
             const levelCountElement = document.querySelector('.level-count');
             levelCountElement.textContent = `Found ${levels.length} levels`;
@@ -456,18 +648,13 @@
             const tbody = document.getElementById('resultsBody');
             tbody.innerHTML = '';
             
-            // Store all levels but only show a portion initially
             filteredLevels = levels;
             visibleRows = 0;
             
-            // Show initial batch of rows
             loadMoreRows();
-            
-            // Show or hide load more button
             toggleLoadMoreButton();
         }
         
-        // Load more rows when button is clicked
         function loadMoreRows() {
             const tbody = document.getElementById('resultsBody');
             const endRow = Math.min(visibleRows + rowsPerLoad, filteredLevels.length);
@@ -477,11 +664,9 @@
                 const row = document.createElement('tr');
                 row.className = 'level-row visible';
                 
-                // Format created date
                 const createdAt = new Date(level.createdAt * 1000);
                 const formattedDate = createdAt.toLocaleDateString();
                 
-                // Get difficulty class and text
                 let difficultyClass = '';
                 let difficultyText = '';
                 switch(level.difficulty) {
@@ -506,7 +691,7 @@
                 }
                 
                 row.innerHTML = `
-                    <td>${level.id}</td>
+                    <td>${level.levelId}</td>
                     <td>${level.title || 'Untitled'}</td>
                     <td>${level.gamer?.nickname || 'Unknown'}</td>
                     <td>${level.rating}</td>
@@ -524,7 +709,6 @@
             toggleLoadMoreButton();
         }
         
-        // Toggle load more button visibility
         function toggleLoadMoreButton() {
             const loadMoreBtn = document.getElementById('loadMoreBtn');
             if (visibleRows < filteredLevels.length) {
@@ -534,7 +718,6 @@
             }
         }
         
-        // Filter levels based on search criteria
         function filterLevels() {
             const searchTerm = document.getElementById('searchTerm').value.toLowerCase();
             const ratingComparison = document.getElementById('ratingComparison').value;
@@ -548,46 +731,44 @@
             const difficultyFilter = document.getElementById('difficultyFilter').value;
             
             filteredLevels = allLevels.filter(level => {
-                // Search term filter
                 if (searchTerm) {
-                    const matchesTitle = level.title?.toLowerCase().includes(searchTerm);
-                    const matchesNickname = level.gamer?.nickname?.toLowerCase().includes(searchTerm);
-                    const matchesId = level.id.toString().includes(searchTerm);
+                    const title = level.title ? level.title.toLowerCase() : '';
+                    const nickname = level.gamer && level.gamer.nickname ? level.gamer.nickname.toLowerCase() : '';
+                    const id = level.id ? level.id.toString() : '';
+                    
+                    const matchesTitle = title.includes(searchTerm);
+                    const matchesNickname = nickname.includes(searchTerm);
+                    const matchesId = id.includes(searchTerm);
                     
                     if (!matchesTitle && !matchesNickname && !matchesId) {
                         return false;
                     }
                 }
                 
-                // Rating filter
                 if (ratingComparison !== 'any') {
                     if (ratingComparison === 'greater' && level.rating <= ratingValue) return false;
                     if (ratingComparison === 'equal' && level.rating !== ratingValue) return false;
                     if (ratingComparison === 'less' && level.rating >= ratingValue) return false;
                 }
                 
-                // Rating count filter
                 if (ratingCountComparison !== 'any') {
                     if (ratingCountComparison === 'greater' && level.ratingCount <= ratingCountValue) return false;
                     if (ratingCountComparison === 'equal' && level.ratingCount !== ratingCountValue) return false;
                     if (ratingCountComparison === 'less' && level.ratingCount >= ratingCountValue) return false;
                 }
                 
-                // UU clear count filter
                 if (uuClearCountComparison !== 'any') {
                     if (uuClearCountComparison === 'greater' && level.uuClearCount <= uuClearCountValue) return false;
                     if (uuClearCountComparison === 'equal' && level.uuClearCount !== uuClearCountValue) return false;
                     if (uuClearCountComparison === 'less' && level.uuClearCount >= uuClearCountValue) return false;
                 }
                 
-                // Comment count filter
                 if (commentCountComparison !== 'any') {
                     if (commentCountComparison === 'greater' && level.commentCount <= commentCountValue) return false;
                     if (commentCountComparison === 'equal' && level.commentCount !== commentCountValue) return false;
                     if (commentCountComparison === 'less' && level.commentCount >= commentCountValue) return false;
                 }
                 
-                // Difficulty filter
                 if (difficultyFilter !== 'any' && level.difficulty !== parseInt(difficultyFilter)) {
                     return false;
                 }
@@ -598,7 +779,6 @@
             displayLevels(filteredLevels);
         }
         
-        // Reset all filters
         function resetFilters() {
             document.getElementById('searchTerm').value = '';
             document.getElementById('ratingComparison').value = 'any';
@@ -615,7 +795,6 @@
             displayLevels(filteredLevels);
         }
         
-        // Handle scroll events
         function handleScroll() {
             const scrollTopBtn = document.getElementById('scrollTopBtn');
             if (window.pageYOffset > 300) {
@@ -625,7 +804,6 @@
             }
         }
         
-        // Scroll to top function
         function scrollToTop() {
             window.scrollTo({
                 top: 0,
